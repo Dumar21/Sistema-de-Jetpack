@@ -1,0 +1,480 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local jugador = Players.LocalPlayer
+local character = jugador.Character or jugador.CharacterAdded:Wait()
+local Humanoid = character:WaitForChild("Humanoid")
+local HumanoidRootPart = character:WaitForChild("HumanoidRootPart")
+local herramienta = script.Parent
+local impulsoJugador = ReplicatedStorage:WaitForChild("ImpulsoJugador")
+
+local JETPACK = {
+	velocidadImpulso = 400,
+	alturaFlotacion = 100,
+	fuerzaFlotacion = 196.2,
+	combustibleMaximo = 100,
+	consumoCombustible = 0.1,
+	recargaCombustible = 0.3,
+	retrasoDobleToque = 0.7,
+	duracionImpulso = 0.2,
+	velocidadMovimiento = 100,
+	velocidadVertical = 100,
+}
+
+local function lerp(a, b, t)
+	return a + (b - a) * t
+end
+
+local conteoSaltos, tiempoUltimoSalto = 0, 0
+local estaJetpackActivo, estaImpulsando = false, false
+local tiempoInicioImpulso = 0
+local combustibleJetpack = JETPACK.combustibleMaximo
+local interfazCombustible, velocidadCuerpo
+local estaMoviendoAdelante, estaMoviendoAtras = false, false
+local estaMoviendoDerecha, estaMoviendoIzquierda = false, false
+local estaEquipado = false
+local conexionActualizacion
+local animacionActual = "Aire"
+local esperandoTransicionAnimacion = false
+local estaDescendiendo = false
+local velocidadDescenso = 0
+local camaraTemblorConexion
+local ultimoEstado
+
+local function activarParticulasIniciales()
+	impulsoJugador:FireServer(herramienta, "Activar")
+end
+
+local function desactivarTodasParticulas()
+	impulsoJugador:FireServer(herramienta, "Desactivar")
+end
+
+local function activarTemblorCamara()
+	if camaraTemblorConexion then return end
+	local camara = workspace.CurrentCamera
+	local tiempoBase = tick()
+
+	camaraTemblorConexion = RunService.RenderStepped:Connect(function()
+		if not estaJetpackActivo then
+			camaraTemblorConexion:Disconnect()
+			camaraTemblorConexion = nil
+			camara.CFrame = camara.CFrame
+			return
+		end
+
+		local tiempo = tick() - tiempoBase
+		local intensidad = 0.1
+		local frecuencia = 3.5
+		local offsetX = math.noise(tiempo * frecuencia, 0, 0) * intensidad
+		local offsetY = math.noise(0, tiempo * frecuencia, 0) * intensidad
+		local offsetZ = math.noise(0, 0, tiempo * frecuencia) * intensidad * 0.5
+
+		local cframeBase = camara.CFrame
+		camara.CFrame = cframeBase * CFrame.new(offsetX, offsetY, offsetZ)
+	end)
+end
+
+local function activarJetpack()
+	if not estaEquipado or estaJetpackActivo or combustibleJetpack <= 0 then return end
+	estaJetpackActivo = true
+	estaImpulsando = true
+	tiempoInicioImpulso = tick()
+	Humanoid.WalkSpeed = 0
+	velocidadCuerpo = Instance.new("BodyVelocity")
+	velocidadCuerpo.Name = "JetpackVelocity"
+	velocidadCuerpo.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+	velocidadCuerpo.Velocity = Vector3.new(0, JETPACK.velocidadImpulso, 0)
+	velocidadCuerpo.Parent = HumanoidRootPart
+	activarParticulasIniciales()
+	animacionActual = "Aire"
+	impulsoJugador:FireServer(herramienta, "Animacion", "Aire")
+	game.StarterGui:SetCore("SendNotification", {Title = "Jetpack", Text = "¡Jetpack Activado!", Duration = 2})
+	activarTemblorCamara()
+	if interfazCombustible.botonDesactivar then
+		interfazCombustible.botonDesactivar.Visible = true
+	end
+end
+
+local function desactivarJetpack()
+	if not estaJetpackActivo then return end
+	estaJetpackActivo = false
+	estaImpulsando = false
+	estaDescendiendo = false
+	Humanoid.WalkSpeed = 16
+	desactivarTodasParticulas()
+	impulsoJugador:FireServer(herramienta, "Animacion", "Reposo")
+	animacionActual = "Reposo"
+	if velocidadCuerpo then
+		velocidadCuerpo:Destroy()
+		velocidadCuerpo = nil
+	end
+	local fuerzaCuerpo = HumanoidRootPart:FindFirstChild("JetpackForce")
+	if fuerzaCuerpo then
+		fuerzaCuerpo:Destroy()
+	end
+	game.StarterGui:SetCore("SendNotification", {Title = "Jetpack", Text = "Jetpack Desactivado", Duration = 2})
+	if interfazCombustible.botonDesactivar then
+		interfazCombustible.botonDesactivar.Visible = false
+	end
+end
+
+local function crearInterfaz()
+	local guiPantalla = Instance.new("ScreenGui", jugador.PlayerGui)
+	guiPantalla.Name = "JetpackUI"
+	local marco = Instance.new("CanvasGroup", guiPantalla)
+	marco.Size = UDim2.new(0.153, 0, 0.023, 0)
+	marco.Position = UDim2.new(0.5, -100, 0.9, 0)
+	marco.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	marco.Visible = false
+	local Contorno = Instance.new("UICorner", marco)
+	Contorno.CornerRadius = UDim.new(1, 0)
+	local barra = Instance.new("Frame", marco)
+	barra.Size = UDim2.new(1, 0, 1, 0)
+	barra.BackgroundColor3 = Color3.fromRGB(0, 200, 255)
+	barra.BorderSizePixel = 0
+	local Contorno2 = Instance.new("UICorner", barra)
+	Contorno2.CornerRadius = UDim.new(1, 0)
+
+	local botonDesactivar = nil
+	if UserInputService.TouchEnabled then
+		botonDesactivar = Instance.new("ImageButton", guiPantalla)
+		botonDesactivar.Size = UDim2.new(0, 40, 0, 40)
+		botonDesactivar.Position = UDim2.new(0.85, 0, 0.65, 0)
+		botonDesactivar.BackgroundTransparency = 1
+		botonDesactivar.Image = "rbxasset://textures/ui/Input/TouchControlsSheetV2.png"
+		botonDesactivar.ImageTransparency = 0.5
+		botonDesactivar.ImageRectOffset = Vector2.new(1, 146)
+		botonDesactivar.Rotation = 180
+		botonDesactivar.Visible = false
+		botonDesactivar.MouseButton1Click:Connect(function()
+			if estaJetpackActivo then
+				botonDesactivar.ImageRectOffset = Vector2.new(146, 146)
+				desactivarJetpack()
+				task.wait(0.1)
+				botonDesactivar.ImageRectOffset = Vector2.new(1, 146)
+			end
+		end)
+	end
+
+	return {marco = marco, barra = barra, botonDesactivar = botonDesactivar}
+end
+
+local function cambiarAnimacion(nuevaAnimacion)
+	if animacionActual == nuevaAnimacion then return end
+	animacionActual = nuevaAnimacion
+	impulsoJugador:FireServer(herramienta, "Animacion", nuevaAnimacion)
+end
+
+local function actualizarJetpack(tiempoDelta)
+	if not estaEquipado then return end
+
+	if not estaJetpackActivo then
+		combustibleJetpack = math.min(JETPACK.combustibleMaximo, combustibleJetpack + JETPACK.recargaCombustible * tiempoDelta)
+		interfazCombustible.marco.Visible = combustibleJetpack < JETPACK.combustibleMaximo
+		interfazCombustible.barra.Size = UDim2.new(combustibleJetpack / JETPACK.combustibleMaximo, 0, 1, 0)
+		return
+	end
+
+	combustibleJetpack = math.max(0, combustibleJetpack - JETPACK.consumoCombustible * tiempoDelta)
+	interfazCombustible.marco.Visible = true
+	interfazCombustible.barra.Size = UDim2.new(combustibleJetpack / JETPACK.combustibleMaximo, 0, 1, 0)
+
+	if combustibleJetpack <= 0 then
+		if not estaDescendiendo then
+			estaDescendiendo = true
+			velocidadDescenso = velocidadCuerpo.Velocity.Y
+			desactivarTodasParticulas()
+			cambiarAnimacion("Reposo")
+		end
+	else
+		estaDescendiendo = false
+	end
+
+	if estaDescendiendo then
+		velocidadDescenso = velocidadDescenso - (workspace.Gravity * tiempoDelta * 0.2)
+		if velocidadCuerpo then
+			velocidadCuerpo.Velocity = Vector3.new(velocidadCuerpo.Velocity.X, velocidadDescenso, velocidadCuerpo.Velocity.Z)
+		end
+
+		if velocidadDescenso <= -10 then
+			desactivarJetpack()
+		end
+		return
+	end
+
+	local tiempoActual = tick()
+	if estaImpulsando and tiempoActual - tiempoInicioImpulso < JETPACK.duracionImpulso then
+		return
+	end
+	estaImpulsando = false
+
+	local direccionMovimiento = Vector3.new(0, 0, 0)
+	local velocidadVertical = 0
+	local nuevaAnimacion = "Aire"
+
+	if UserInputService.TouchEnabled then
+		local camara = workspace.CurrentCamera
+		local direccionCamara = camara.CFrame.LookVector
+		local componenteVertical = direccionCamara.Y
+
+		local movimientoHorizontal = Humanoid.MoveDirection
+
+		if movimientoHorizontal.Magnitude > 0.1 then
+			direccionMovimiento = Vector3.new(
+				movimientoHorizontal.X * JETPACK.velocidadMovimiento,
+				0,
+				movimientoHorizontal.Z * JETPACK.velocidadMovimiento
+			)
+
+			if velocidadCuerpo then
+				local factorVertical = math.clamp(componenteVertical * 2, -1, 1)
+				local velocidadActual = velocidadCuerpo.Velocity.Y
+
+				local nuevaVelocidadVertical = math.lerp(
+					velocidadActual,
+					factorVertical * JETPACK.velocidadVertical,
+					0.1
+				)
+
+				velocidadCuerpo.Velocity = Vector3.new(
+					direccionMovimiento.X,
+					nuevaVelocidadVertical,
+					direccionMovimiento.Z
+				)
+			end
+
+			nuevaAnimacion = "Adelante"
+		else
+			if velocidadCuerpo then
+				velocidadCuerpo.Velocity = Vector3.new(0, 0, 0)
+			end
+		end
+	else
+		local camara = workspace.CurrentCamera
+		local direccionCamara = camara.CFrame.LookVector
+		local componenteVertical = direccionCamara.Y
+		local camaraAngulo = math.atan2(direccionCamara.X, direccionCamara.Z)
+		local adelanteX = math.sin(camaraAngulo)
+		local adelanteZ = math.cos(camaraAngulo)
+		local derechaX = math.sin(camaraAngulo + math.pi/2)
+		local derechaZ = math.cos(camaraAngulo + math.pi/2)
+
+		local shiftLockActivo = UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+
+		if estaMoviendoAdelante then
+			direccionMovimiento = direccionMovimiento + Vector3.new(adelanteX, 0, adelanteZ)
+			velocidadVertical = componenteVertical * JETPACK.velocidadVertical
+			nuevaAnimacion = "Adelante"
+		end
+
+		if estaMoviendoAtras then
+			direccionMovimiento = direccionMovimiento - Vector3.new(adelanteX, 0, adelanteZ)
+			if shiftLockActivo then
+				velocidadVertical = -componenteVertical * JETPACK.velocidadVertical
+				nuevaAnimacion = "Atras"
+			else
+				velocidadVertical = -componenteVertical * JETPACK.velocidadVertical
+				nuevaAnimacion = "Adelante"
+			end
+		end
+
+		if estaMoviendoDerecha then
+			direccionMovimiento = direccionMovimiento - Vector3.new(derechaX, 0, derechaZ)
+			if shiftLockActivo then
+				nuevaAnimacion = "Derecha"
+			else
+				nuevaAnimacion = "Adelante"
+			end
+		end
+
+		if estaMoviendoIzquierda then
+			direccionMovimiento = direccionMovimiento + Vector3.new(derechaX, 0, derechaZ)
+			if shiftLockActivo then
+				nuevaAnimacion = "Izquierda"
+			else
+				nuevaAnimacion = "Adelante"
+			end
+		end
+
+		if direccionMovimiento.Magnitude > 0 then
+			direccionMovimiento = direccionMovimiento.Unit * JETPACK.velocidadMovimiento
+		end
+	end
+
+	cambiarAnimacion(nuevaAnimacion)
+
+	if velocidadCuerpo then
+		if UserInputService.TouchEnabled then
+			velocidadCuerpo.Velocity = Vector3.new(direccionMovimiento.X, velocidadCuerpo.Velocity.Y, direccionMovimiento.Z)
+		else
+			velocidadCuerpo.Velocity = Vector3.new(direccionMovimiento.X, velocidadVertical, direccionMovimiento.Z)
+		end
+	end
+
+	if direccionMovimiento.Magnitude > 0 then
+		local direccionMirada = Vector3.new(direccionMovimiento.X, 0, direccionMovimiento.Z).Unit
+		local nuevoCFrame = CFrame.lookAt(HumanoidRootPart.Position, HumanoidRootPart.Position + direccionMirada)
+		HumanoidRootPart.CFrame = HumanoidRootPart.CFrame:Lerp(nuevoCFrame, 0.1)
+	end
+
+	local fuerzaCuerpo = HumanoidRootPart:FindFirstChild("JetpackForce") or Instance.new("BodyForce")
+	fuerzaCuerpo.Name = "JetpackForce"
+	fuerzaCuerpo.Force = Vector3.new(0, workspace.Gravity * HumanoidRootPart.AssemblyMass, 0)
+	fuerzaCuerpo.Parent = HumanoidRootPart
+end
+
+local function configurarEventosToque(character)
+	for _, parte in pairs(character:GetChildren()) do
+		if parte:IsA("BasePart") then
+			parte.Touched:Connect(function(golpe)
+				if estaJetpackActivo and CollectionService:HasTag(golpe, "Piso") then
+					desactivarJetpack()
+				end
+			end)
+		end
+	end
+end
+
+local function inicializar()
+	interfazCombustible = crearInterfaz()
+
+	herramienta.Equipped:Connect(function()
+		estaEquipado = true
+		character = jugador.Character or jugador.CharacterAdded:Wait()
+		Humanoid = character:WaitForChild("Humanoid")
+		HumanoidRootPart = character:WaitForChild("HumanoidRootPart")
+		ultimoEstado = Humanoid:GetState()
+		task.wait(0.1)
+
+		esperandoTransicionAnimacion = true
+		impulsoJugador:FireServer(herramienta, "Animacion", "Equipar")
+		
+		Humanoid.StateChanged:Connect(function(_, nuevoEstado)
+			if not estaEquipado or esperandoTransicionAnimacion then return end
+
+			if nuevoEstado == Enum.HumanoidStateType.Jumping and ultimoEstado ~= Enum.HumanoidStateType.Jumping then
+				local tiempo = tick()
+				if tiempo - tiempoUltimoSalto < JETPACK.retrasoDobleToque then
+					conteoSaltos = conteoSaltos + 1
+					if conteoSaltos >= 2 then
+						activarJetpack()
+						conteoSaltos = 0
+					end
+				else
+					conteoSaltos = 1
+				end
+				tiempoUltimoSalto = tiempo
+			end
+
+			ultimoEstado = nuevoEstado
+		end)
+
+		task.delay(1.9, function()
+			if estaEquipado and not estaJetpackActivo and esperandoTransicionAnimacion then
+				esperandoTransicionAnimacion = false
+				impulsoJugador:FireServer(herramienta, "Animacion", "Reposo")
+				if not conexionActualizacion then
+					conexionActualizacion = RunService.RenderStepped:Connect(actualizarJetpack)
+				end
+				configurarEventosToque(character)
+			end
+		end)
+	end)
+
+	herramienta.Unequipped:Connect(function()
+		estaEquipado = false
+		esperandoTransicionAnimacion = false
+		desactivarJetpack()
+		impulsoJugador:FireServer(herramienta, "Animacion", "Desequipar")
+		if conexionActualizacion then
+			conexionActualizacion:Disconnect()
+			conexionActualizacion = nil
+		end
+		if interfazCombustible then
+			interfazCombustible.marco.Visible = false
+			if interfazCombustible.botonDesactivar then
+				interfazCombustible.botonDesactivar.Visible = false
+			end
+		end
+	end)
+
+	UserInputService.InputBegan:Connect(function(entrada, procesado)
+		if not estaEquipado or procesado then return end
+		if entrada.KeyCode == Enum.KeyCode.LeftControl then
+			desactivarJetpack()
+		elseif not UserInputService.TouchEnabled then
+			if entrada.KeyCode == Enum.KeyCode.W then
+				estaMoviendoAdelante = true
+			elseif entrada.KeyCode == Enum.KeyCode.S then
+				estaMoviendoAtras = true
+			elseif entrada.KeyCode == Enum.KeyCode.D then
+				estaMoviendoDerecha = true
+			elseif entrada.KeyCode == Enum.KeyCode.A then
+				estaMoviendoIzquierda = true
+			end
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(entrada)
+		if not estaEquipado or UserInputService.TouchEnabled then return end 
+		if entrada.KeyCode == Enum.KeyCode.W then
+			estaMoviendoAdelante = false
+		elseif entrada.KeyCode == Enum.KeyCode.S then
+			estaMoviendoAtras = false
+		elseif entrada.KeyCode == Enum.KeyCode.D then
+			estaMoviendoDerecha = false
+		elseif entrada.KeyCode == Enum.KeyCode.A then
+			estaMoviendoIzquierda = false
+		end
+	end)
+
+	jugador.CharacterAdded:Connect(function(nuevoPersonaje)
+		character = nuevoPersonaje
+		Humanoid = character:WaitForChild("Humanoid")
+		HumanoidRootPart = character:WaitForChild("HumanoidRootPart")
+		ultimoEstado = Humanoid:GetState()
+
+		Humanoid.StateChanged:Connect(function(_, nuevoEstado)
+			if not estaEquipado or esperandoTransicionAnimacion then return end
+
+			if ultimoEstado ~= Enum.HumanoidStateType.Jumping and nuevoEstado == Enum.HumanoidStateType.Jumping then
+				local tiempo = tick()
+				if tiempo - tiempoUltimoSalto < JETPACK.retrasoDobleToque then
+					conteoSaltos = conteoSaltos + 1
+					if conteoSaltos >= 2 then
+						activarJetpack()
+						conteoSaltos = 0
+					end
+				else
+					conteoSaltos = 1
+				end
+				tiempoUltimoSalto = tiempo
+			end
+
+			ultimoEstado = nuevoEstado
+		end)
+
+		if estaEquipado then
+			configurarEventosToque(character)
+			esperandoTransicionAnimacion = true
+			impulsoJugador:FireServer(herramienta, "Animacion", "Equipar")
+			task.delay(1.0, function()
+				if estaEquipado and not estaJetpackActivo and esperandoTransicionAnimacion then
+					esperandoTransicionAnimacion = false
+					impulsoJugador:FireServer(herramienta, "Animacion", "Reposo")
+				end
+			end)
+		end
+	end)
+
+	Humanoid.Died:Connect(function()
+		if estaEquipado then
+			desactivarJetpack()
+		end
+	end)
+end
+
+inicializar()
