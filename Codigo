@@ -11,6 +11,7 @@ local HumanoidRootPart = character:WaitForChild("HumanoidRootPart")
 local herramienta = script.Parent
 local impulsoJugador = ReplicatedStorage:WaitForChild("ImpulsoJugador")
 
+-- Aqui se nombran todos los valores del jetpack, como cuánto sube, cuánto combustible gasta, etc
 local JETPACK = {
 	velocidadImpulso = 400,
 	alturaFlotacion = 100,
@@ -44,14 +45,17 @@ local velocidadDescenso = 0
 local camaraTemblorConexion
 local ultimoEstado
 
+-- Activa como ondas al subir y el fuego que tiene el Jetpack
 local function activarParticulasIniciales()
 	impulsoJugador:FireServer(herramienta, "Activar")
 end
 
+-- Aqui solo desactiva el fuego que salen de los motores
 local function desactivarTodasParticulas()
 	impulsoJugador:FireServer(herramienta, "Desactivar")
 end
 
+-- Hace que la camara tiemble para darle un buen efecto al Jetpack
 local function activarTemblorCamara()
 	if camaraTemblorConexion then return end
 	local camara = workspace.CurrentCamera
@@ -77,6 +81,7 @@ local function activarTemblorCamara()
 	end)
 end
 
+-- Activa el jetpack, con un impulso hacia arriba y desactiva su movimiento
 local function activarJetpack()
 	if not estaEquipado or estaJetpackActivo or combustibleJetpack <= 0 then return end
 	estaJetpackActivo = true
@@ -98,6 +103,7 @@ local function activarJetpack()
 	end
 end
 
+-- Apaga el jetpack y vuelve todo a la normalidad
 local function desactivarJetpack()
 	if not estaJetpackActivo then return end
 	estaJetpackActivo = false
@@ -121,6 +127,7 @@ local function desactivarJetpack()
 	end
 end
 
+-- Crea la interfaz para mostrar el combustible, con una barra y un boton para apagar en tactil
 local function crearInterfaz()
 	local guiPantalla = Instance.new("ScreenGui", jugador.PlayerGui)
 	guiPantalla.Name = "JetpackUI"
@@ -168,6 +175,8 @@ local function cambiarAnimacion(nuevaAnimacion)
 	impulsoJugador:FireServer(herramienta, "Animacion", nuevaAnimacion)
 end
 
+
+-- Actualiza el jetpack cada frame, combustible, movimiento, física, todo
 local function actualizarJetpack(tiempoDelta)
 	if not estaEquipado then return end
 
@@ -326,6 +335,7 @@ local function actualizarJetpack(tiempoDelta)
 	fuerzaCuerpo.Parent = HumanoidRootPart
 end
 
+-- Detecta cuando el personaje toca el piso para apagar el jetpack y no se llegue a buguear
 local function configurarEventosToque(character)
 	for _, parte in pairs(character:GetChildren()) do
 		if parte:IsA("BasePart") then
@@ -338,6 +348,7 @@ local function configurarEventosToque(character)
 	end
 end
 
+-- Configura todo, eventos, interfaz, y conexiones para que el jetpack funcione perfecto
 local function inicializar()
 	interfazCombustible = crearInterfaz()
 
@@ -400,7 +411,8 @@ local function inicializar()
 			end
 		end
 	end)
-
+	
+	-- Esto maneja las teclas para moverse con el teclado
 	UserInputService.InputBegan:Connect(function(entrada, procesado)
 		if not estaEquipado or procesado then return end
 		if entrada.KeyCode == Enum.KeyCode.LeftControl then
@@ -430,7 +442,8 @@ local function inicializar()
 			estaMoviendoIzquierda = false
 		end
 	end)
-
+	
+	-- Actualiza el persona si vuelve aparecer
 	jugador.CharacterAdded:Connect(function(nuevoPersonaje)
 		character = nuevoPersonaje
 		Humanoid = character:WaitForChild("Humanoid")
@@ -477,4 +490,5 @@ local function inicializar()
 	end)
 end
 
+-- Inicia todo el sistema del jetpack
 inicializar()
